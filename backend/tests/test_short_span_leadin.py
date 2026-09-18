@@ -58,6 +58,10 @@ def test_only_very_short_spans_qualify():
     assert is_short_span("ab")
     assert is_short_span("[ab]")                       # punctuation is not counted
     assert not is_short_span("a" * 7)
+    # Two words: the first may be far quieter than the second, and was cut
+    # out of a real render as if it were the lead-in.
+    assert not is_short_span("ab.\ncd")
+    assert not is_short_span("ab cd")
     assert not is_short_span("")
     assert not is_short_span("...")
 
@@ -107,3 +111,25 @@ def test_punctuation_only_spans_are_not_synthesized():
     audio, _ = synthesize_chapter(spans, synth, SR, crossfade_ms=0)
     assert said == ["ab"]
     assert audio.shape[-1] == trim_short_span_leadin(_clip(), SR).shape[-1] + int(SR * 0.3)
+
+
+def test_a_multiword_fragment_cached_under_the_old_rule_is_not_replayed():
+    """Its stored WAV may have lost its first word to the too-wide trim."""
+    from services.audiobook import Span, synthesize_chapter
+
+    class _Cache:
+        asked, stored = [], []
+
+        def load(self, span, nonce=0):
+            self.asked.append(span.text)
+            return None
+
+        def store(self, span, audio, nonce=0):
+            self.stored.append(span.text)
+
+    cache = _Cache()
+    clip = _clip()
+    audio, _ = synthesize_chapter([Span(voice_id=None, text="ab.\ncd")], lambda *_: clip, SR,
+                                  crossfade_ms=0, segment_cache=cache)
+    assert cache.asked == cache.stored and cache.asked[0] != "ab.\ncd"
+    assert audio.shape[-1] == clip.shape[-1]          # and it is no longer trimmed

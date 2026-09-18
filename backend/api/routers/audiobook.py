@@ -740,7 +740,7 @@ def _render_chapter_cached(chapter, synth, sr, engine_id, resolve, cache_dir, le
     from services.audio_io import atomic_save_wav
     from services.audiobook import ExpressiveOptions, Span, voice_map_signature
     from services.longform_render import SegmentCache, chapter_cache_key
-    from services.audio_dsp import is_short_span, is_speakable
+    from services.audio_dsp import is_speakable, single_mora_carrier, was_trimmed_as_short
     from services.pronunciation import normalize_lexicon
     from services.text_normalization import normalize_for_tts
     from services.watermark import mark_synthetic, will_mark
@@ -784,11 +784,15 @@ def _render_chapter_cached(chapter, synth, sr, engine_id, resolve, cache_dir, le
     seg_extra_sig = f"{lex_sig}\x00{expr_sig}" if expr_sig else lex_sig
     if vmap_sig:
         seg_extra_sig = f"{seg_extra_sig}\x00{vmap_sig}"
-    if any(is_short_span(s.text) or not is_speakable(s.text) for s in spans if s.text):
+    if any(was_trimmed_as_short(s.text) or not is_speakable(s.text) for s in spans if s.text):
         # Chapters holding a very short or punctuation-only span re-key once, so a chapter WAV
         # cached before the lead-in trim is not replayed. The segment cache
         # underneath still hits, so this is re-assembly, not re-synthesis.
-        sig["\x00leadin"] = "1"
+        sig["\x00leadin"] = "2"   # 2: the trim no longer applies to multi-word fragments
+    if any(single_mora_carrier(s.text) for s in spans):
+        # Same one-time re-key for chapters holding a lone kana mora, which is
+        # now rendered behind a carrier sentence and cut back out.
+        sig["\x00mora"] = "1"
     if will_mark():
         # Provenance-marked chapters cache under their own key (#1169): a
         # chapter WAV rendered while watermarking was off/unavailable —

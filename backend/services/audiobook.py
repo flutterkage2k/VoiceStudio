@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 
@@ -239,6 +239,20 @@ def parse_audiobook_script(text: str, *, default_voice: Optional[str] = None) ->
     return AudiobookPlan(chapters=chapters)
 
 
+def _render_mora(synth, bare_text, span, sample_rate, attempts: int = 3):
+    """Render a carrier-wrapped mora and cut it back out; ``None`` if no take
+    leaves a clean cut. Each attempt uses a different carrier, so a retry is a
+    different take even when the seed is pinned."""
+    from services.audio_dsp import cut_last_island, single_mora_carrier
+
+    for attempt in range(attempts):
+        take = synth(single_mora_carrier(bare_text, attempt), span.voice_id, span.speed)
+        cut = cut_last_island(take, sample_rate) if take is not None else None
+        if cut is not None:
+            return cut
+    return None
+
+
 def synthesize_chapter(
     spans: list[Span],
     synth: Callable[[str, Optional[str], Optional[float]], "object"],
@@ -271,7 +285,8 @@ def synthesize_chapter(
     from services.chunked_tts import (concatenate_audio_chunks,
                                       join_rendered_chunks,
                                       split_text_into_chunks)
-    from services.audio_dsp import is_short_span, is_speakable, trim_short_span_leadin
+    from services.audio_dsp import (is_short_span, is_speakable, single_mora_carrier,
+                                    trim_short_span_leadin, was_trimmed_as_short)
     from services.pronunciation import apply_lexicon
 
     items: list = []  # ("a", tensor) for audio, ("s", n_samples) for silence
@@ -283,16 +298,38 @@ def synthesize_chapter(
     occ_counts: dict = {}
     for span in spans:
         if is_speakable(span.text):
+            # `key` is what the segment cache is addressed by; it differs from
+            # the span where an older cached WAV must not be replayed:
+            #  * a lone kana mora is rendered behind a carrier sentence and cut
+            #    back out, so it keys on the carrier — the bare-mora segment
+            #    cached earlier was breath only;
+            #  * a short MULTI-word fragment was once lead-in-trimmed, which
+            #    could cut its quiet first word and store the damage.
+            said = apply_lexicon(span.text, lexicon)
+            carrier = single_mora_carrier(said)
+            short = is_short_span(span.text)
+            key = span
+            if carrier:
+                key = replace(span, text=carrier)
+            elif was_trimmed_as_short(span.text) and not short:
+                key = replace(span, text=span.text + "\x00untrimmed")
             occ_key = (span.voice_id, span.text, getattr(span, "speed", None))
             occ = occ_counts.get(occ_key, 0)
             occ_counts[occ_key] = occ + 1
-            audio = segment_cache.load(span, nonce=occ) if segment_cache is not None else None
-            if audio is not None and is_short_span(span.text):
+            audio = segment_cache.load(key, nonce=occ) if segment_cache is not None else None
+            hit = audio is not None
+            if audio is not None and short:
                 # A segment cached before the trim existed still carries the
                 # lead-in; the trim is a no-op on one that is already clean.
                 audio = trim_short_span_leadin(audio, sample_rate)
+            cacheable = True
+            if audio is None and carrier:
+                audio = _render_mora(synth, said, span, sample_rate)
+                # No usable cut in any take: say the bare mora as before, and
+                # leave it uncached so the next render tries the carrier again.
+                cacheable = audio is not None
             if audio is None:
-                chunks = split_text_into_chunks(apply_lexicon(span.text, lexicon))
+                chunks = split_text_into_chunks(said)
                 rendered = [synth(c, span.voice_id, span.speed) for c in chunks]
                 # Deliberately NOT pre-filtered (#1330). Dropping the empties
                 # here both hid them — a chapter would come back short with
@@ -301,11 +338,10 @@ def synthesize_chapter(
                 audio = join_rendered_chunks(rendered, sample_rate,
                                              crossfade_ms=crossfade_ms,
                                              texts=chunks)
-                if audio is not None and is_short_span(span.text):
-                    # Before the store, so a cached segment is already clean.
+                if audio is not None and short:
                     audio = trim_short_span_leadin(audio, sample_rate)
-                if audio is not None and segment_cache is not None:
-                    segment_cache.store(span, audio, nonce=occ)
+            if audio is not None and cacheable and not hit and segment_cache is not None:
+                segment_cache.store(key, audio, nonce=occ)
             if audio is not None:
                 items.append(("a", audio))
         if span.pause_ms_after > 0:

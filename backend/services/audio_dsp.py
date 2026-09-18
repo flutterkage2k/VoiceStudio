@@ -13,6 +13,7 @@ installed, every function degrades gracefully (returns audio unmodified).
 """
 import logging
 import torch
+from typing import Optional
 
 logger = logging.getLogger("omnivoice.dsp")
 
@@ -197,7 +198,8 @@ SHORT_SPAN_MAX_CHARS = 6
 _LEADIN_KEEP_S = 0.10
 _LEADIN_FADE_S = 0.03
 #: Onset = first frame within this many dB of the loudest frame. Measured on
-#: the lead-in this removes: the breath sat 25-31 dB under the word's peak.
+#: the lead-in this removes: the breath sat 26-35 dB under the loudest frame,
+#: and at -24 its own peaks already read as the onset on 7 of 20 samples.
 _LEADIN_ONSET_DB = -20.0
 
 
@@ -212,8 +214,17 @@ def is_speakable(text: str) -> bool:
 
 def is_short_span(text: str) -> bool:
     """True for a span short enough to pick up the boosted-length lead-in."""
-    n = sum(1 for ch in (text or "") if ch.isalnum())
-    return 0 < n <= SHORT_SPAN_MAX_CHARS
+    # One unbroken word only. A fragment such as "X.\nY" is short too, but its
+    # first word can sit 20 dB under the second — the trim took it for lead-in
+    # and a whole word went missing from a rendered book.
+    words = "".join(ch if ch.isalnum() else " " for ch in (text or "")).split()
+    return len(words) == 1 and len(words[0]) <= SHORT_SPAN_MAX_CHARS
+
+
+def was_trimmed_as_short(text: str) -> bool:
+    """The first, too-wide rule: any span of up to 6 characters, however many
+    words. Kept only so segments cached under it can be told apart."""
+    return 0 < sum(1 for ch in (text or "") if ch.isalnum()) <= SHORT_SPAN_MAX_CHARS
 
 
 def trim_short_span_leadin(audio_tensor: torch.Tensor, sample_rate: int) -> torch.Tensor:
@@ -242,6 +253,73 @@ def trim_short_span_leadin(audio_tensor: torch.Tensor, sample_rate: int) -> torc
     out = audio_tensor[..., start:].clone()
     k = min(int(_LEADIN_FADE_S * sample_rate), out.shape[-1])
     out[..., :k] *= torch.linspace(0.0, 1.0, k, dtype=out.dtype, device=out.device)
+    return out
+
+
+#: One kana, optionally with a small ya/yu/yo — a single mora. Code points, not
+#: literals: hiragana U+3041-3096, katakana U+30A1-30FA.
+_SMALL_YA_YU_YO = "\u3083\u3085\u3087\u30e3\u30e5\u30e7"
+#: "kore wa, X." — the engine cannot voice a lone mora (2 of 6 seeds, and
+#: those barely), but does once real speech precedes it (5 of 6 behind this
+#: carrier). Padding with punctuation or a forced duration did not help (0 of 18).
+#: The first is the measured one and the segment-cache key; the others exist so
+#: a retry differs even under a pinned seed (the seed is derived from the text).
+#: "kore wa, X." / "sore wa, X." / "tsugi wa, X."
+_MORA_CARRIERS = (
+    "\u3053\u308c\u306f\u3001{}\u3002",
+    "\u305d\u308c\u306f\u3001{}\u3002",
+    "\u3064\u304e\u306f\u3001{}\u3002",
+)
+
+
+def _is_kana(ch: str) -> bool:
+    return "\u3041" <= ch <= "\u3096" or "\u30a1" <= ch <= "\u30fa"
+
+
+def single_mora_carrier(text: str, attempt: int = 0) -> Optional[str]:
+    """The carrier sentence for a span that is one kana mora, else ``None``."""
+    said = [ch for ch in (text or "") if ch.isalnum()]
+    if not (len(said) == 1 or (len(said) == 2 and said[1] in _SMALL_YA_YU_YO)):
+        return None
+    if not _is_kana(said[0]):
+        return None
+    return _MORA_CARRIERS[attempt % len(_MORA_CARRIERS)].format("".join(said))
+
+
+#: A citation-form mora cut from the carrier measured 0.12-0.24 s.
+_MORA_MIN_S, _MORA_MAX_S = 0.06, 0.45
+_ISLAND_GAP_S = 0.12
+_ISLAND_PAD_S = 0.03
+
+
+def cut_last_island(audio_tensor: torch.Tensor, sample_rate: int) -> Optional[torch.Tensor]:
+    """The last stretch of sound after a pause — the mora behind its carrier.
+
+    ``None`` when there is no pause to cut at, or what follows it is not
+    mora-sized; the caller re-renders rather than keep carrier words.
+    """
+    n = audio_tensor.shape[-1] if audio_tensor.numel() else 0
+    frame = max(1, int(sample_rate * 0.02))
+    if n < frame * 4:
+        return None
+    mono = audio_tensor.reshape(-1, n).abs().amax(dim=0) if audio_tensor.ndim > 1 else audio_tensor.abs()
+    rms = mono[: n - n % frame].reshape(-1, frame).pow(2).mean(dim=1).sqrt()
+    active = (rms > float(mono.max()) * 0.03).tolist()
+    gap = max(1, round(_ISLAND_GAP_S / 0.02))
+    end = max((i for i, a in enumerate(active) if a), default=-1)
+    start = end
+    while start > 0 and any(active[max(0, start - gap):start]):
+        start -= 1
+    if end < 0 or not any(active[:start]):
+        return None                      # nothing before the pause: no carrier
+    if not _MORA_MIN_S <= (end - start + 1) * 0.02 <= _MORA_MAX_S:
+        return None
+    pad = int(_ISLAND_PAD_S * sample_rate)
+    out = audio_tensor[..., max(0, start * frame - pad): min(n, (end + 1) * frame + pad)].clone()
+    k = min(int(0.01 * sample_rate), out.shape[-1] // 2)
+    ramp = torch.linspace(0.0, 1.0, k, dtype=out.dtype, device=out.device)
+    out[..., :k] *= ramp
+    out[..., -k:] *= ramp.flip(0)
     return out
 
 
