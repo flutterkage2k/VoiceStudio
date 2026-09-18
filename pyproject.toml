@@ -284,6 +284,9 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv]
+# `dev` is uv's implicit default; naming it here keeps it installed once the
+# list is set explicitly. See the voxcpm group in [dependency-groups].
+default-groups = ["dev", "voxcpm"]
 constraint-dependencies = [
     "mako>=1.3.12",
     "msgpack>=1.2.1",
@@ -318,6 +321,16 @@ dev = [
     # the generated stubs are committed, so neither the installer nor Docker
     # needs protoc. tests/test_worker_protocol_gen.py fails if the two drift.
     "grpcio-tools>=1.60",
+]
+# VoxCPM2 opt-in engine, kept in a GROUP rather than
+# [project.optional-dependencies] on purpose: `bun run desktop` runs a plain
+# `uv sync`, which prunes anything not in the resolved environment — an extra
+# installed by hand (`uv pip install voxcpm`) is uninstalled on the next
+# launch. Groups listed in [tool.uv] default-groups survive that sync, so the
+# engine stays selectable in Model Catalogue -> Engines across restarts.
+# Drop "voxcpm" from default-groups to opt back out.
+voxcpm = [
+    "voxcpm>=2.0.3",
 ]
 
 [tool.pytest.ini_options]
