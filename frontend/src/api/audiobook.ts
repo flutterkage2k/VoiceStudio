@@ -93,7 +93,7 @@ export interface AudiobookGenerateBody extends ExpressiveRequestFields {
   // the backend. Now threaded through ('Auto' → the profile's language).
   language?: string | null;
   bitrate?: string;
-  format?: 'm4b' | 'mp3';
+  format?: 'm4b' | 'mp3' | 'wav';
   loudness?: 'off' | 'acx' | 'podcast' | null;
   cover_path?: string | null;
   metadata?: AudiobookMetadata | null;
@@ -154,7 +154,7 @@ export interface LongformRenderBody extends ExpressiveRequestFields {
   default_voice?: string | null;
   language?: string | null;
   bitrate?: string;
-  format?: 'm4b' | 'mp3';
+  format?: 'm4b' | 'mp3' | 'wav';
   loudness?: 'off' | 'acx' | 'podcast' | null;
   cover_path?: string | null;
   metadata?: AudiobookMetadata | null;
@@ -173,4 +173,73 @@ export async function longformRender(body: LongformRenderBody): Promise<Response
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+export interface AnnotateStatus {
+  available: boolean;
+  reason: string | null;
+}
+
+/** Whether script annotation can run on this host (local `claude` CLI). */
+export async function annotateStatus(): Promise<AnnotateStatus> {
+  const res = await apiFetch('/audiobook/annotate/status');
+  return res.json();
+}
+
+export interface AnnotateResult {
+  text: string;
+  chunks: number;
+  annotated: number;
+  skipped: Array<{ index: number; reason: string }>;
+}
+
+/**
+ * Insert pause / emphasis / reaction markup into a script.
+ *
+ * Returns the raw SSE Response — read `response.body` with the sseParse
+ * helpers, same as `audiobookGenerate`. Events are `start` (chunk count),
+ * `chunk` (one per chunk, as it lands) and `done` (the annotated script).
+ * Streamed because a long script is minutes of work, and a button with no
+ * per-chunk signal is indistinguishable from a frozen one.
+ *
+ * The final event carries the script for PREVIEW — the caller decides whether
+ * to apply it. Chunks the backend could not verify come back unchanged and are
+ * listed in `skipped`, so a partial pass is visible instead of silent.
+ */
+export async function annotateScript(body: {
+  text: string;
+  model?: string | null;
+}): Promise<Response> {
+  return apiFetch('/audiobook/annotate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export interface LexiconSuggestion {
+  word: string;
+  say: string;
+}
+
+/**
+ * Latin words in a CJK script the lexicon does not cover yet, with a DRAFT
+ * reading for each.
+ *
+ * The readings are a proposal for the user to check, never something to write
+ * straight into the lexicon: how a name or a loanword should be read is a
+ * judgement the model cannot settle. `reason` is set when the readings came
+ * back blank (no local CLI, a timeout) — the word list is still useful then.
+ */
+export async function suggestLexicon(body: {
+  text: string;
+  known: string[];
+  language?: string | null;
+}): Promise<{ words: LexiconSuggestion[]; reason: string | null }> {
+  const res = await apiFetch('/audiobook/lexicon/suggest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
 }

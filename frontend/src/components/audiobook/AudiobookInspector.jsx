@@ -74,6 +74,13 @@ export default function AudiobookInspector({
   setLexRow,
   addLexRow,
   removeLexRow,
+  globalLex,
+  setGlobalLexRow,
+  addGlobalLexRow,
+  removeGlobalLexRow,
+  scriptText,
+  knownWords,
+  addGlobalLexRows,
 }) {
   // `undefined` means the user has not chosen a panel yet: Cast becomes the
   // useful default as soon as the script contains [voice:…] tags. Once the user
@@ -110,6 +117,7 @@ export default function AudiobookInspector({
             profiles={profiles}
             defaultLabel={t('audiobook.engine_default')}
             ariaLabel={t('audiobook.default_voice')}
+            menuPortal
           />
         </div>
 
@@ -137,6 +145,7 @@ export default function AudiobookInspector({
           >
             <option value="m4b">{t('audiobook.format_m4b')}</option>
             <option value="mp3">{t('audiobook.format_mp3')}</option>
+            <option value="wav">{t('audiobook.format_wav')}</option>
           </select>
         </div>
       </div>
@@ -238,6 +247,14 @@ export default function AudiobookInspector({
                   setLexRow={setLexRow}
                   addLexRow={addLexRow}
                   removeLexRow={removeLexRow}
+                  globalLex={globalLex}
+                  setGlobalLexRow={setGlobalLexRow}
+                  addGlobalLexRow={addGlobalLexRow}
+                  removeGlobalLexRow={removeGlobalLexRow}
+                  scriptText={scriptText}
+                  knownWords={knownWords}
+                  addGlobalLexRows={addGlobalLexRows}
+                  language={language}
                 />
               </div>
             )}

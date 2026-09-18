@@ -489,19 +489,24 @@ def build_render_cmd(
 
     Inputs: 0 = concat-demuxer list of chapter WAVs, 1 = FFMETADATA (chapters +
     global tags), 2 = cover image (only when present + valid). ``fmt`` is
-    ``m4b`` (AAC in mp4, faststart) or ``mp3`` (libmp3lame). A loudness preset
+    ``m4b`` (AAC in mp4, faststart), ``mp3`` (libmp3lame) or ``wav`` (PCM
+    16-bit, lossless — the edit master; no chapters, no cover, and the
+    engine's own sample rate is kept rather than resampled). A loudness preset
     adds an ``-af loudnorm`` pass; an invalid/oversized cover is silently
     dropped (see :func:`validate_cover_image`).
     """
     if not _BITRATE_RE.match(bitrate or ""):
         bitrate = "128k"
-    is_mp3 = (fmt or "").lower() == "mp3"
+    fmt_l = (fmt or "").lower()
+    is_mp3 = fmt_l == "mp3"
+    is_wav = fmt_l == "wav"
     # Cover art is embedded for M4B only. The MP3 muxer rejects an
     # ``attached_pic`` video stream via ``-c:v copy`` (produces a corrupt file
     # across ffmpeg versions), and a reliable cross-version ID3 APIC path is
     # finicky — so for MP3 we skip the cover rather than ship a broken file.
-    # M4B is the cover-bearing audiobook format anyway.
-    embed_cover = validate_cover_image(cover_path) and not is_mp3
+    # WAV has nowhere to put one. M4B is the cover-bearing audiobook format
+    # anyway.
+    embed_cover = validate_cover_image(cover_path) and not (is_mp3 or is_wav)
 
     cmd = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -522,7 +527,12 @@ def build_render_cmd(
     if filt:
         cmd += ["-af", filt]
 
-    if is_mp3:
+    if is_wav:
+        # No -ar: a 24 kHz engine stays 24 kHz. Upsampling would double the
+        # file and add nothing; a 48 kHz engine (VoxCPM2) comes out at 48 kHz
+        # on its own. No -b:a either — PCM has no bitrate.
+        cmd += ["-c:a", "pcm_s16le", "-f", "wav", str(out_path)]
+    elif is_mp3:
         cmd += ["-c:a", "libmp3lame", "-b:a", bitrate, "-f", "mp3", str(out_path)]
     else:  # m4b — AAC in an mp4 container
         cmd += ["-c:a", "aac", "-b:a", bitrate]

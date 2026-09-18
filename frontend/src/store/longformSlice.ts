@@ -106,7 +106,7 @@ interface LongformProject {
   meta: LongformMeta;
   lexicon: Record<string, string>;
   coverRef: CoverRef | null;
-  outputFormat: 'm4b' | 'mp3';
+  outputFormat: 'm4b' | 'mp3' | 'wav';
   loudness: 'off' | 'acx' | 'podcast';
   defaultVoice: string | null;
   language: string;
@@ -129,8 +129,18 @@ export interface LongformSlice {
   script: string;
   meta: LongformMeta;
   lexicon: Record<string, string>;
+  /** Respellings that apply to EVERY book, merged under the per-project
+   *  lexicon at render time.
+   *
+   *  Deliberately not part of a project record: `loadProject` / `newProject`
+   *  replace `lexicon` wholesale, so a respelling a user will always want
+   *  (an English word respelled for a Japanese narrator, a recurring proper
+   *  noun) had to be retyped for every new book. This one survives both,
+   *  and the project lexicon still wins on a conflicting word so a book
+   *  can override it. */
+  globalLexicon: Record<string, string>;
   coverRef: CoverRef | null;
-  outputFormat: 'm4b' | 'mp3';
+  outputFormat: 'm4b' | 'mp3' | 'wav';
   loudness: 'off' | 'acx' | 'podcast';
   defaultVoice: string | null;
   // Longform render language (#1208 / #505): 'Auto' → the profile's language,
@@ -167,9 +177,11 @@ export interface LongformSlice {
   setScript: (script: string) => void;
   setProjectMeta: (patch: Partial<LongformMeta>) => void; // merge (I1)
   setLexicon: (lexicon: Record<string, string>) => void; // replace (I3)
+  /** Replace the cross-project lexicon. NOT part of a project record. */
+  setGlobalLexicon: (lexicon: Record<string, string>) => void;
   setVoiceCast: (name: string, profileId: string | null) => void; // merge/remove
   setOutputPrefs: (patch: {
-    outputFormat?: 'm4b' | 'mp3';
+    outputFormat?: 'm4b' | 'mp3' | 'wav';
     loudness?: 'off' | 'acx' | 'podcast';
     defaultVoice?: string | null;
     language?: string;
@@ -202,7 +214,7 @@ export const SLICE_DEFAULTS = {
   meta: {} as LongformMeta,
   lexicon: {} as Record<string, string>,
   coverRef: null as CoverRef | null,
-  outputFormat: 'm4b' as 'm4b' | 'mp3',
+  outputFormat: 'm4b' as 'm4b' | 'mp3' | 'wav',
   loudness: 'off' as 'off' | 'acx' | 'podcast',
   defaultVoice: null as string | null,
   language: 'Auto' as string,
@@ -241,6 +253,8 @@ export const createLongformSlice: StateCreator<LongformSlice, [], [], LongformSl
   currentProjectId: null,
   ...SLICE_DEFAULTS,
   meta: { ...SLICE_DEFAULTS.meta },
+  // Not reset by newProject/loadProject — that is the whole point.
+  globalLexicon: {} as Record<string, string>,
   lexicon: { ...SLICE_DEFAULTS.lexicon },
   overrides: { ...SLICE_DEFAULTS.overrides },
   voiceCast: { ...SLICE_DEFAULTS.voiceCast },
@@ -262,6 +276,7 @@ export const createLongformSlice: StateCreator<LongformSlice, [], [], LongformSl
   setScript: (script) => set({ script }),
   setProjectMeta: (patch) => set((s) => ({ meta: { ...s.meta, ...patch } })), // I1 merge
   setLexicon: (lexicon) => set({ lexicon: { ...lexicon } }), // I3 replace
+  setGlobalLexicon: (globalLexicon) => set({ globalLexicon: { ...globalLexicon } }),
   setVoiceCast: (name, profileId) =>
     set((s) => {
       const next = { ...s.voiceCast };

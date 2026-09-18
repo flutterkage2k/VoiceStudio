@@ -117,6 +117,33 @@ describe('longformSlice — long-form fields', () => {
     expect(get().lastOutput).toBe(''); // loading B never presents A's render
   });
 
+  it('the global lexicon outlives newProject and loadProject', () => {
+    // The whole reason it exists: `lexicon` is part of a project record, so a
+    // respelling the user always wants ("apple" in Japanese narration) used to
+    // be retyped for every new book.
+    const { get } = harness();
+    get().setGlobalLexicon({ apple: 'アップル' });
+    get().setLexicon({ gaol: 'jail' });
+    get().saveProject('Book one');
+    const id = get().currentProjectId as string;
+
+    get().newProject();
+    expect(get().lexicon).toEqual({});                     // project-scoped: cleared
+    expect(get().globalLexicon).toEqual({ apple: 'アップル' }); // survives
+
+    get().loadProject(id);
+    expect(get().lexicon).toEqual({ gaol: 'jail' });        // restored from the record
+    expect(get().globalLexicon).toEqual({ apple: 'アップル' }); // still untouched
+  });
+
+  it('the global lexicon is not written into a saved project record', () => {
+    const { get } = harness();
+    get().setGlobalLexicon({ apple: 'アップル' });
+    get().saveProject('Book one');
+    const rec = get().storyProjects[0] as unknown as Record<string, unknown>;
+    expect(rec.globalLexicon).toBeUndefined();
+  });
+
   it('setProjectMeta MERGES; setLexicon REPLACES; setOutputPrefs merges', () => {
     const { get } = harness();
     get().setProjectMeta({ title: 'The Crown' });

@@ -16,6 +16,7 @@ import GenerationProgress from '../components/audiobook/GenerationProgress';
 import PlanList from '../components/audiobook/PlanList';
 import AudiobookResult from '../components/audiobook/AudiobookResult';
 import MarkupToolbar from '../components/audiobook/MarkupToolbar';
+import AnnotateButton from '../components/audiobook/AnnotateButton';
 import StatsBar from '../components/audiobook/StatsBar';
 import ValidationWarnings from '../components/audiobook/ValidationWarnings';
 import AudiobookHero from '../components/audiobook/AudiobookHero';
@@ -105,7 +106,7 @@ export default function AudiobookTab({ profiles = [] }) {
   // Output prefs + metadata (embedded in the file; players show these) — now
   // store-backed. `meta` is default-filled so every controlled input gets a
   // defined string (an empty store record never flips a controlled→uncontrolled).
-  const format = useAppStore((s) => s.outputFormat); // 'm4b' | 'mp3'
+  const format = useAppStore((s) => s.outputFormat); // 'm4b' | 'mp3' | 'wav'
   const setFormat = (v) => setOutputPrefs({ outputFormat: v });
   const loudness = useAppStore((s) => s.loudness); // 'off' | 'acx' | 'podcast'
   const setLoudness = (v) => setOutputPrefs({ loudness: v });
@@ -128,13 +129,21 @@ export default function AudiobookTab({ profiles = [] }) {
 
   // Pronunciation lexicon: editable {word → respelling} rows (extracted to a
   // hook so this page stays under the max-lines lint, #1217).
-  const { lex, lexDict, setLexRow, addLexRow, removeLexRow } = useAudiobookLexicon();
+  const {
+    lex, lexDict, setLexRow, addLexRow, removeLexRow,
+    globalLex, setGlobalLexRow, addGlobalLexRow, removeGlobalLexRow,
+    knownWords, addGlobalLexRows,
+  } = useAudiobookLexicon();
 
   // Cast + validation derive purely from the script (#1217). castNames drives
   // the Cast panel; voiceMap is the minimal name→profile map actually present in
   // the script (stray store mappings are excluded so the cache key stays stable
   // and an absent map keeps today's render). Warnings are non-blocking hints.
   const textareaRef = useRef(null);
+  // The annotation pass rewrites the whole script, so editing underneath it
+  // would be silently discarded when the result is applied. Lock the editor
+  // for the duration instead of letting the user type into a dead buffer.
+  const [annotating, setAnnotating] = useState(false);
   const [warningsDismissed, setWarningsDismissed] = useState(false);
   const castNames = useMemo(() => parseCastNames(text), [text]);
   const voiceMap = useMemo(() => {
@@ -236,7 +245,9 @@ export default function AudiobookTab({ profiles = [] }) {
         setError(e?.message || String(e));
       }
     },
-    [text, defaultVoice, lex, overrides, language, voiceMapArg],
+    // `lex`/`globalLex` are listed so the callback refreshes when either
+    // list changes — the body calls lexDict(), which merges both.
+    [text, defaultVoice, lex, globalLex, overrides, language, voiceMapArg],
   );
 
   const onCreate = useCallback(async () => {
@@ -357,6 +368,7 @@ export default function AudiobookTab({ profiles = [] }) {
     coverFile,
     meta,
     lex,
+    globalLex,
     overrides,
     language,
     voiceMapArg,
@@ -408,12 +420,20 @@ export default function AudiobookTab({ profiles = [] }) {
             {text.trim() ? <StatsBar t={t} text={text} /> : null}
           </div>
           <div className="audiobook-tab__manuscript flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px]">
-            <div className="border-b border-transparent px-[10px] py-[7px]">
+            <div className="flex flex-wrap items-center gap-[8px] border-b border-transparent px-[10px] py-[7px]">
               <MarkupToolbar t={t} textareaRef={textareaRef} text={text} setText={setText} />
+              <AnnotateButton
+                t={t}
+                text={text}
+                setText={setText}
+                onBusyChange={setAnnotating}
+              />
             </div>
             <textarea
               ref={textareaRef}
               className="input-base"
+              readOnly={annotating}
+              aria-busy={annotating || undefined}
               value={text}
               onChange={(e) => {
                 setText(e.target.value);
@@ -459,6 +479,13 @@ export default function AudiobookTab({ profiles = [] }) {
             setLexRow={setLexRow}
             addLexRow={addLexRow}
             removeLexRow={removeLexRow}
+            globalLex={globalLex}
+            setGlobalLexRow={setGlobalLexRow}
+            addGlobalLexRow={addGlobalLexRow}
+            removeGlobalLexRow={removeGlobalLexRow}
+            scriptText={text}
+            knownWords={knownWords}
+            addGlobalLexRows={addGlobalLexRows}
           />
 
           {!warningsDismissed && !generating && (

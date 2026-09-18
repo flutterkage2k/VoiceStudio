@@ -34,6 +34,11 @@ const gen = {
 };
 vi.mock('../api/audiobook', () => ({
   audiobookPlan: vi.fn(),
+  // Script annotation probes availability on mount; without these the tab
+  // throws before it renders.
+  annotateStatus: vi.fn(() => Promise.resolve({ available: false, reason: '' })),
+  annotateScript: vi.fn(),
+  suggestLexicon: vi.fn(() => Promise.resolve({ words: [], reason: null })),
   audiobookUploadCover: vi.fn(),
   audiobookPreviewChapter: vi.fn(),
   audiobookImport: vi.fn(),

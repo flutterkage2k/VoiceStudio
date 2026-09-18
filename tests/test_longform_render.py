@@ -171,6 +171,26 @@ def test_render_cmd_mp3_format():
     assert "+faststart" not in cmd
 
 
+def test_render_cmd_wav_format():
+    """The edit master: lossless PCM, no bitrate, no container flags."""
+    cmd = build_render_cmd("ffmpeg", "c.txt", "m.ffmeta", "out.wav", fmt="wav")
+    assert "pcm_s16le" in cmd
+    assert cmd[-3:] == ["-f", "wav", "out.wav"]
+    assert "-b:a" not in cmd            # PCM has no bitrate
+    assert "+faststart" not in cmd
+    assert "-ar" not in cmd             # the engine's own sample rate is kept
+
+
+def test_render_cmd_wav_never_embeds_cover(tmp_path):
+    """WAV has nowhere to carry a cover — the stream must not be mapped in."""
+    cover = tmp_path / "c.jpg"
+    cover.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+    cmd = build_render_cmd("ffmpeg", "c.txt", "m.ffmeta", "out.wav",
+                           fmt="wav", cover_path=str(cover))
+    assert "attached_pic" not in cmd
+    assert str(cover) not in cmd
+
+
 def test_render_cmd_bitrate_validation():
     ok = build_render_cmd("ffmpeg", "c", "m", "o", bitrate="192k")
     assert "192k" in ok

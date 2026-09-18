@@ -137,6 +137,141 @@ class AudiobookPlanRequest(BaseModel):
     default_voice: str | None = None
 
 
+class AnnotateRequest(BaseModel):
+    text: str
+    model: str | None = None
+
+
+#: A script this long is a book, not a chapter set — annotating it would hold a
+#: worker for many minutes of CLI calls. The editor never needs more.
+_ANNOTATE_MAX_CHARS = 200_000
+
+
+@router.get("/audiobook/annotate/status")
+def audiobook_annotate_status() -> dict:
+    """Whether script annotation can run here, and why not when it can't.
+
+    A local-CLI capability, so it is reported the way engines report
+    themselves rather than assumed present: the button stays disabled with
+    this reason on a host without the CLI.
+    """
+    from services.script_annotate import cli_available
+
+    ok, reason = cli_available()
+    return {"available": ok, "reason": reason or None}
+
+
+@router.post("/audiobook/annotate")
+async def audiobook_annotate(req: AnnotateRequest) -> StreamingResponse:
+    """Insert pause / emphasis / reaction markup into a script.
+
+    Streams Server-Sent Events (start / chunk / done) so a minutes-long pass
+    shows progress instead of a frozen button. The final event carries the
+    annotated script for the editor to PREVIEW — the caller applies it
+    explicitly. Never edits in place: the script is the user's manuscript, and
+    a silent overwrite of it is not recoverable.
+    """
+    import anyio
+    from fastapi import HTTPException
+
+    from services.script_annotate import cli_available, iter_annotate_script
+
+    text = req.text or ""
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Nothing to annotate — the script is empty.")
+    if len(text) > _ANNOTATE_MAX_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Script is too long to annotate in one pass "
+                   f"({len(text)} characters, limit {_ANNOTATE_MAX_CHARS}). "
+                   f"Annotate a few chapters at a time.",
+        )
+    ok, reason = cli_available()
+    if not ok:
+        raise HTTPException(status_code=503, detail=reason)
+
+    # Streamed, not awaited-in-one-lump: a long script is minutes of CLI
+    # calls, and a UI with no per-chunk signal is indistinguishable from a
+    # frozen one. Each chunk's result is pushed as it lands.
+    async def _events():
+        import json as _json
+
+        send, recv = anyio.create_memory_object_stream(max_buffer_size=64)
+
+        def _pump():
+            try:
+                for ev in iter_annotate_script(text, model=req.model):
+                    anyio.from_thread.run(send.send, ev)
+            except Exception as exc:  # noqa: BLE001 — surface, never hang the stream
+                logger.exception("script annotation failed")
+                anyio.from_thread.run(
+                    send.send, {"type": "error", "detail": str(exc)[:300]})
+            finally:
+                anyio.from_thread.run(send.aclose)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(anyio.to_thread.run_sync, _pump)
+            async with recv:
+                async for ev in recv:
+                    yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_events(), media_type="text/event-stream")
+
+
+class LexiconSuggestRequest(BaseModel):
+    text: str
+    #: Words the lexicon already covers — never offered again.
+    known: list[str] = Field(default_factory=list)
+    language: str | None = None
+    model: str | None = None
+
+
+@router.post("/audiobook/lexicon/suggest")
+async def audiobook_lexicon_suggest(req: LexiconSuggestRequest) -> dict:
+    """Latin words in a CJK script that the lexicon does not cover yet.
+
+    Returns ``{"words": [{"word", "say"}], "reason": str | None}``. The
+    readings are a DRAFT for the user to check — the caller shows them for
+    confirmation and never writes them straight into the lexicon. How a name or
+    a loanword should be read is a judgement the model cannot settle, and a
+    wrong respelling saved silently is exactly the class of bug this feature
+    exists to catch.
+
+    A missing CLI is not an error here: the word list is still useful on its
+    own, so it comes back with ``reason`` saying why the readings are blank.
+    """
+    from services.script_annotate import (
+        cli_available,
+        find_unregistered_latin_words,
+        suggest_readings,
+    )
+    import anyio
+
+    text = req.text or ""
+    if len(text) > _ANNOTATE_MAX_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Script is too long to scan in one pass ({len(text)} characters, "
+                   f"limit {_ANNOTATE_MAX_CHARS}).",
+        )
+    words = find_unregistered_latin_words(text, req.known)
+    if not words:
+        return {"words": [], "reason": None}
+
+    ok, why = cli_available()
+    if not ok:
+        return {"words": [{"word": w, "say": ""} for w in words], "reason": why}
+
+    out = await anyio.to_thread.run_sync(
+        lambda: suggest_readings(words, req.language or "", model=req.model)
+    )
+    readings = out["readings"]
+    return {
+        "words": [{"word": w, "say": readings.get(w, "")} for w in words],
+        "reason": out["reason"],
+    }
+
+
 @router.post("/audiobook/plan")
 def audiobook_plan(req: AudiobookPlanRequest) -> dict:
     """Parse a script into a chapter/span plan (pure preview, no synthesis)."""
@@ -219,7 +354,7 @@ class AudiobookRequest(ExpressiveMixin):
     default_voice: str | None = None   # voice profile id; None = engine default
     language: str | None = None        # None/"Auto" → profile language, else autodetect (#505)
     bitrate: str = "128k"
-    format: str = "m4b"                 # "m4b" | "mp3"
+    format: str = "m4b"                 # "m4b" | "mp3" | "wav"
     loudness: str | None = None         # None/"off" | "acx" | "podcast" (opt-in)
     cover_path: str | None = None       # server-side path to a jpg/png cover
     # Global tags embedded in the output: {title, author, narrator, year,
@@ -1063,7 +1198,8 @@ async def _render_longform_sse(
         concat_path = os.path.join(work, "concat.txt")
         with open(concat_path, "w", encoding="utf-8") as f:
             f.write(build_concat_list(chapter_files))
-        ext = "mp3" if (fmt or "").lower() == "mp3" else "m4b"
+        fmt_l = (fmt or "").lower()
+        ext = fmt_l if fmt_l in ("mp3", "wav") else "m4b"
         out_name = f"{job_type}_{job_id}.{ext}"
         out_path = os.path.join(OUTPUTS_DIR, out_name)
 

@@ -46,6 +46,10 @@ export default function CastPanel({
               profiles={profiles}
               defaultLabel={t('audiobook.engine_default')}
               ariaLabel={`${t('audiobook.cast')}: ${name}`}
+              // The inspector side panel is overflow-y:auto, so an inline menu
+              // is clipped at the panel edge — the user's own voices sat above
+              // the visible window and looked missing (same hazard as #1220).
+              menuPortal
             />
           </div>
         );
