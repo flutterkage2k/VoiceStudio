@@ -57,6 +57,8 @@ _ALLOWED_FILES = {
     "backend/services/segmentation.py",
     "backend/services/sentence_chunker.py",       # streaming-TTS terminator tables (Patter port, Wave 1.4)
     "backend/services/subtitle_segmenter.py",
+    "backend/services/text_normalization.py",  # spoken range word per language ("20~30" must not read as one number)
+    "backend/services/pronunciation.py",       # script ranges + the JA example showing why an unspaced script needs no \b
     "backend/core/http_headers.py",               # docstring quotes the CJK filename that 500'd the header (#1262)
     "frontend/src/components/DubSegmentRow.jsx",
     "frontend/src/components/StoriesEditor.jsx",

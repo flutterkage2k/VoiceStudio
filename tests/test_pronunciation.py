@@ -263,3 +263,42 @@ def test_inline_redos_safe():
     t0 = time.perf_counter()
     apply_inline_overrides(s)
     assert time.perf_counter() - t0 < 0.5
+
+
+# ── Scripts without word spacing (#lexicon-cjk) ─────────────────────────────
+# A `\b` guard cannot match between two CJK characters, so a Japanese entry
+# used to fire only on a lone word: "情報" → "じょうほう" applied to "情報" but
+# not to "視覚的情報" or even "情報を" — i.e. almost never in real prose. The
+# guard is now added only where it can match.
+class TestUnspacedScripts:
+    JA = {"情報": "じょうほう"}
+
+    @pytest.mark.parametrize("text,expected", [
+        ("情報", "じょうほう"),                       # alone: worked before too
+        ("視覚的情報", "視覚的じょうほう"),             # inside a longer run
+        ("情報を", "じょうほうを"),                    # a particle attached
+        ("その情報は", "そのじょうほうは"),
+        ("聴覚的情報の話", "聴覚的じょうほうの話"),
+    ])
+    def test_japanese_entry_applies_without_spaces(self, text, expected):
+        assert apply_lexicon(text, self.JA) == expected
+
+    def test_latin_keys_still_refuse_partial_hits(self):
+        """The guard must stay where it works — "apple" inside "pineapple"."""
+        assert apply_lexicon("pineapple and apple", {"apple": "アップル"}) == (
+            "pineapple and アップル"
+        )
+
+    def test_spaced_scripts_keep_their_guard(self):
+        """Korean spaces its words, so a partial hit stays blocked."""
+        lex = {"정보": "정보오"}
+        assert apply_lexicon("정보 처리", lex) == "정보오 처리"
+        assert apply_lexicon("시각적정보", lex) == "시각적정보"
+
+    def test_longest_key_still_wins(self):
+        lex = {"情報": "じょうほう", "視覚的情報": "しかくてきじょうほう"}
+        assert apply_lexicon("視覚的情報", lex) == "しかくてきじょうほう"
+
+    def test_still_idempotent(self):
+        once = apply_lexicon("視覚的情報を見る", self.JA)
+        assert apply_lexicon(once, self.JA) == once

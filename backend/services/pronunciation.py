@@ -58,15 +58,47 @@ def normalize_lexicon(lexicon: Optional[dict]) -> dict[str, str]:
     return out
 
 
+#: Scripts that do not put spaces between words. A `\b` guard is meaningless
+#: there — every neighbour is a word character, so the boundary never matches
+#: and the entry silently never fires. That is what made a Japanese lexicon
+#: entry look broken: "情報" → "じょうほう" applied to a lone "情報" but not to
+#: "視覚的情報" or even "情報を", i.e. almost never in real prose.
+#: (Hangul, Cyrillic, Greek, Arabic, Devanagari … DO space their words, so they
+#: keep the guard and stay protected from partial hits.)
+_UNSPACED_SCRIPT_RE = re.compile(
+    "["
+    "\u3040-\u30ff"      # hiragana + katakana
+    "\u3400-\u4dbf"      # CJK ext A
+    "\u4e00-\u9fff"      # CJK unified
+    "\uf900-\ufaff"      # CJK compatibility
+    "\u0e00-\u0e7f"      # Thai
+    "\u0e80-\u0eff"      # Lao
+    "\u1780-\u17ff"      # Khmer
+    "\u1000-\u109f"      # Myanmar
+    "]"
+)
+
+
+def _needs_boundary(ch: str) -> bool:
+    """Whether a ``\b`` guard at this edge can ever match — and should.
+
+    Word chars in a spaced script get the guard (so "cat" never fires inside
+    "category"). An unspaced-script char gets none: the guard could not match
+    there, and matching inside a longer run is exactly what is wanted.
+    """
+    if not ch or _UNSPACED_SCRIPT_RE.match(ch):
+        return False
+    return ch.isalnum() or ch == "_"
+
+
 def _boundary_prefix(key: str) -> str:
-    """``\\b`` only if the key starts with a word char (else the boundary would
-    never match — e.g. a key opening with punctuation)."""
-    return r"\b" if key[:1].isalnum() or key[:1] == "_" else ""
+    """``\\b`` only where it can match — see :func:`_needs_boundary`."""
+    return r"\b" if _needs_boundary(key[:1]) else ""
 
 
 def _boundary_suffix(key: str) -> str:
-    """``\\b`` only if the key ends with a word char."""
-    return r"\b" if key[-1:].isalnum() or key[-1:] == "_" else ""
+    """``\\b`` only where it can match — see :func:`_needs_boundary`."""
+    return r"\b" if _needs_boundary(key[-1:]) else ""
 
 
 def _compile(lexicon: dict[str, str]) -> tuple[Optional[re.Pattern], dict[str, str]]:

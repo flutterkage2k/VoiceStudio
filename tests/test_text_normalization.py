@@ -65,6 +65,28 @@ _CHANGE_CASES = [
     ("French", "il a 42 chats", "il a quarante-deux chats"),
     ("French", "Mme Dupont arrive", "Madame Dupont arrive"),
     ("Russian", "у меня 42 кота", "у меня сорок два кота"),
+    # Digit ranges: the tilde has to be SPOKEN or the engine mashes the two
+    # numbers into one ("20~30초" was read as "이십삼"). Spacing is part of the
+    # per-language form — a Korean postposition binds to its numeral, Japanese
+    # and Chinese set no spaces, English needs them.
+    ("Korean", "대략 20~30초짜리", "대략 20에서 30초짜리"),
+    ("Korean", "가격은 20~30만원", "가격은 20에서 30만원"),
+    ("ko", "20~30초", "20에서 30초"),
+    ("Japanese", "20〜30分ぐらい", "20から30分ぐらい"),          # wave dash U+301C
+    ("Japanese", "20～30分ぐらい", "20から30分ぐらい"),          # fullwidth U+FF5E
+    ("Chinese", "大约需要20～30秒", "大约需要20到30秒"),
+    # EN runs the range through num2words afterwards, as it does any digit
+    ("English", "It takes 20~30 seconds", "It takes twenty to thirty seconds"),
+    # List markers: the engine drops or mangles a parenthesised list number,
+    # so a numbered outline silently loses its numbering ("（1）短所克服" was
+    # heard as "一単性克服"). Japanese only — the one language whose renders
+    # were measured; see the note on _LIST_MARK.
+    ("Japanese", "（2）広げると深める", "2、広げると深める"),
+    ("Japanese", "やや上級者向けです。（2）広げると深める", "やや上級者向けです。2、広げると深める"),
+    ("Japanese", "(2)広げると深める", "2、広げると深める"),      # halfwidth parens
+    ("Japanese", "（２）全角数字", "2、全角数字"),               # fullwidth digit
+    ("Japanese", "（10）まとめ", "10、まとめ"),
+    ("ja", "（1）短所克服", "1、短所克服"),
     # Universal safety filters (language-independent)
     (None, "hello​ ‍world", "hello world"),
     (None, "too   many\t spaces", "too many spaces"),
@@ -124,6 +146,24 @@ _UNCHANGED_CASES = [
     ("English", "I said no. Fine."),            # the word "no.", not "number"
     ("English", "down main st. Anyway"),        # lowercase "st." is not Saint
     ("German", "es kostet 3,5 Euro"),           # decimal comma: ambiguous
+    # Digit ranges: only the tilde family is a range mark. Everything else that
+    # sits between digits means something other than "to".
+    ("Korean", "대략 20-30초"),                   # ASCII hyphen: also dates/phones
+    ("Korean", "2026-09-05 회의"),                # date
+    ("Korean", "010-1234-5678"),                 # phone number
+    ("Korean", "AB20~30CD"),                     # product code, not a range
+    ("Korean", "1.20~30.5"),                     # decimals either side
+    ("Japanese", "そうですね〜"),                   # tilde not between digits
+    # List markers: only where a list marker actually sits. A parenthetical
+    # mid-sentence and a citation year are not list numbers.
+    ("Japanese", "番号（2）のように扱う"),           # parenthetical aside
+    ("Japanese", "（2020）年の話"),                # 4 digits: a year, not an item
+    ("Japanese", "（123）番"),                     # 3 digits: not a list number
+    ("Korean", "（2）넓히기"),                      # measurement was inconclusive
+    ("Chinese", "（2）扩展"),                       # never measured
+    ("Vietnamese", "（2）mở rộng"),
+    ("Vietnamese", "20~30 giây"),                # no verified spoken form
+    (None, "20~30초"),                           # no language given
     # Unsupported languages keep every digit (num2words unmapped)
     ("Japanese", "42 cats and 3.5 stars at 3:30"),
     ("Thai", "42 cats"),

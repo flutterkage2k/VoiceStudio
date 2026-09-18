@@ -112,6 +112,13 @@ _FULL_NAME_TO_CODE = {
     "vietnamese": "vi",
     "kazakh": "kz",
     "standard arabic": "ar",
+    # Below: inert for num2words (absent from _NUM2WORDS_LANGS, which reads
+    # digits natively for these scripts), present so _plain_lang_code can
+    # resolve them for the digit-range rule.
+    "korean": "ko",
+    "japanese": "ja",
+    "chinese": "zh",
+    "mandarin chinese": "zh",
 }
 
 # ISO codes whose num2words locale name differs.
@@ -176,6 +183,119 @@ def _num2words_lang(language: Optional[str]) -> Optional[str]:
         if c in _NUM2WORDS_LANGS:
             return c
     return None
+
+
+def _plain_lang_code(language: Optional[str]) -> Optional[str]:
+    """Resolve a request language to a bare ISO code, with no num2words gate.
+
+    :func:`_num2words_lang` answers "may I call num2words for this?" and so
+    returns ``None`` for ko/ja/zh/th/vi. Rules that are not num2words-backed
+    need the code itself, which is what this returns.
+    """
+    if not language:
+        return None
+    s = str(language).strip().lower()
+    if not s or s == "auto":
+        return None
+    code = _FULL_NAME_TO_CODE.get(s)
+    if code:
+        return code
+    m = _ISO_CODE_RE.match(s)
+    if m:
+        return _ISO_ALIASES.get(m.group(1), m.group(1))
+    return None
+
+
+# ── Digit ranges ─────────────────────────────────────────────────────────────
+# "20~30" loses its separator at the engine and reads as ONE number: OmniVoice
+# says "이십삼" (23) for "20~30초". Speak the separator instead. Verified by
+# rendering each form and transcribing it back (ko, OmniVoice):
+#     "20~30초"        → heard "23초"          ✗
+#     "20에서 30초"     → heard "20에서 30초"    ✓
+# Only the tilde family is rewritten — those are unambiguously range marks
+# between digits. An ASCII hyphen is left alone on purpose: it also spells
+# dates, phone numbers and product codes, where "to" would be wrong.
+#: Spacing is part of the form, not decoration: a Korean postposition binds to
+#: the numeral ("20에서 30"), Japanese and Chinese set no spaces at all, and
+#: English needs them on both sides.
+_RANGE_FORM = {
+    "ko": "{a}에서 {b}",
+    "ja": "{a}から{b}",
+    "zh": "{a}到{b}",
+    "en": "{a} to {b}",
+}
+
+#: ASCII tilde, wave dash, fullwidth tilde — Japanese and Korean IMEs emit the
+#: latter two, so all three have to match.
+#:
+#: The neighbour guards block digits/decimal marks (so a longer number is never
+#: split) and ASCII letters (so a product code like "AB20~30CD" is left alone),
+#: but deliberately allow everything else: CJK writes its unit right against
+#: the digits — "20~30초", "20〜30分", "20～30秒" — and a \w guard would reject
+#: exactly the cases this rule exists for.
+_NUM_RANGE_RE = re.compile(
+    r"(?<![\d.,])(?<![A-Za-z])(\d{1,6})\s*[~\u301c\uff5e]\s*(\d{1,6})"
+    r"(?![\d.,])(?![A-Za-z])"
+)
+
+
+# ── List markers ─────────────────────────────────────────────────────────────
+# A parenthesised list number is dropped or mangled by the engine, so a
+# numbered outline silently loses its numbering — or worse, the number fuses
+# with the following word into something that is not a word. Rendered and
+# transcribed back (ja, OmniVoice, cloned voice):
+#     "…です。（2）広げると深める"  → heard "…です広げると深める"   number GONE
+#     "(2)広げると深める"          → heard "広げると深める"        number GONE
+#     "（1）短所克服と長所伸展"     → heard "一単性克服と長所進展"   MANGLED
+#     "2、広げると深める"          → heard "2.広げると深める"      correct
+# So swap the brackets for the list separator the engine does read. The digit
+# stays a digit: this engine reads Japanese digits natively, and spelling it
+# out would be a second guess the evidence does not cover.
+#
+# JAPANESE ONLY, deliberately. The same shape very likely misreads elsewhere,
+# but a Korean check came back inconclusive — the control sentence mangled too,
+# so the test said nothing about the brackets — and no other language was
+# measured at all. Add a language here only with its own before/after render,
+# never by analogy; a rule calibrated on one language is how the flatness
+# threshold this file's neighbour had to fix went wrong.
+_LIST_MARK = {
+    "ja": "{n}、",
+}
+
+#: A 1-2 digit number in ASCII or fullwidth parens, at the start of a line or
+#: straight after sentence-ending punctuation — where a list marker actually
+#: sits. The narrow anchor leaves ordinary parentheticals ("番号（2）のように")
+#: and citation years ("（2020）年") alone. Trailing space is consumed so the
+#: replacement controls the spacing.
+_LIST_MARK_RE = re.compile(
+    r"^[　 ]*[（(]([0-9０-９]{1,2})[）)][　 ]*"
+    r"|(?<=[。．！!？?])[　 ]*[（(]([0-9０-９]{1,2})[）)][　 ]*",
+    re.MULTILINE,
+)
+
+#: Fullwidth digits fold to ASCII so the spoken form is unambiguous.
+_FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _speak_list_marks(text: str, lang: str) -> str:
+    """``（2）広げる`` → ``2、広げる``. No-op where the form isn't verified."""
+    form = _LIST_MARK.get(lang)
+    if not form:
+        return text
+
+    def _sub(m: "re.Match") -> str:
+        digits = (m.group(1) or m.group(2)).translate(_FW_DIGITS)
+        return form.format(n=int(digits))
+
+    return _LIST_MARK_RE.sub(_sub, text)
+
+
+def _speak_number_ranges(text: str, lang: str) -> str:
+    """``20~30`` → ``20에서 30``. No-op where the spoken form isn't verified."""
+    form = _RANGE_FORM.get(lang)
+    if not form:
+        return text
+    return _NUM_RANGE_RE.sub(lambda m: form.format(a=m.group(1), b=m.group(2)), text)
 
 
 # ── Universal safety filters (all languages) ─────────────────────────────────
@@ -487,6 +607,12 @@ def normalize_text(text: str, language: Optional[str] = None) -> str:
     if not text:
         return text or ""
     out = _safety_filters(text)
+    # Runs outside the num2words gate below: ko/ja/zh keep their digits (that
+    # gate returns None for them) but still need the range mark spoken.
+    plain = _plain_lang_code(language)
+    if plain:
+        out = _outside_brackets(out, lambda t: _speak_number_ranges(t, plain))
+        out = _outside_brackets(out, lambda t: _speak_list_marks(t, plain))
     lang = _num2words_lang(language)
     if lang:
         if lang in _ABBREV_COMPILED:
