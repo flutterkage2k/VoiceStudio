@@ -271,6 +271,7 @@ def synthesize_chapter(
     from services.chunked_tts import (concatenate_audio_chunks,
                                       join_rendered_chunks,
                                       split_text_into_chunks)
+    from services.audio_dsp import is_short_span, is_speakable, trim_short_span_leadin
     from services.pronunciation import apply_lexicon
 
     items: list = []  # ("a", tensor) for audio, ("s", n_samples) for silence
@@ -281,11 +282,15 @@ def synthesize_chapter(
     # replaying one WAV. Always computed (cheap); inert when the cache ignores it.
     occ_counts: dict = {}
     for span in spans:
-        if span.text:
+        if is_speakable(span.text):
             occ_key = (span.voice_id, span.text, getattr(span, "speed", None))
             occ = occ_counts.get(occ_key, 0)
             occ_counts[occ_key] = occ + 1
             audio = segment_cache.load(span, nonce=occ) if segment_cache is not None else None
+            if audio is not None and is_short_span(span.text):
+                # A segment cached before the trim existed still carries the
+                # lead-in; the trim is a no-op on one that is already clean.
+                audio = trim_short_span_leadin(audio, sample_rate)
             if audio is None:
                 chunks = split_text_into_chunks(apply_lexicon(span.text, lexicon))
                 rendered = [synth(c, span.voice_id, span.speed) for c in chunks]
@@ -296,6 +301,9 @@ def synthesize_chapter(
                 audio = join_rendered_chunks(rendered, sample_rate,
                                              crossfade_ms=crossfade_ms,
                                              texts=chunks)
+                if audio is not None and is_short_span(span.text):
+                    # Before the store, so a cached segment is already clean.
+                    audio = trim_short_span_leadin(audio, sample_rate)
                 if audio is not None and segment_cache is not None:
                     segment_cache.store(span, audio, nonce=occ)
             if audio is not None:

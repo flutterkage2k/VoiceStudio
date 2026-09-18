@@ -197,14 +197,14 @@ def annotate_script(text: str, *, model: str | None = None,
     return last
 
 # ── Lexicon suggestions ─────────────────────────────────────────────────────
-# A Latin word inside CJK narration is the reliable misread: OmniVoice said
-# "アポラン語" for "apple りんご". The lexicon fixes it, but only if the user
+# A Latin word inside CJK narration is the reliable misread: OmniVoice read
+# "apple" next to its Japanese gloss as one garbled word. The lexicon fixes it, but only if the user
 # notices the word in the first place — so find the candidates for them.
 
 #: Only offer suggestions for a script that actually mixes scripts. In an
 #: all-Latin script every word would match, and the failure this addresses
 #: does not happen there.
-_CJK_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힣]")
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3]")
 #: Markup spans are ours, not narration — a [voice:NAME] must never be offered.
 _MARKUP_SPAN_RE = re.compile(r"\[[^\]\[\n]{0,128}\]")
 #: A Latin run of 2+ letters. Apostrophes/hyphens stay inside the word.

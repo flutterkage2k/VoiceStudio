@@ -186,6 +186,65 @@ def trim_trailing_silence(
     return audio_tensor[..., :end]
 
 
+#: A span this short gets its planned length stretched by the engine's
+#: short-text boost (omnivoice/utils/duration.py: below 50 frames the estimate
+#: is raised on a cube-root curve — a 0.47 s word is given 1.24 s). The model
+#: fills the surplus with a breathy lead-in copied from the reference's
+#: delivery, which is what a listener hears as an inhale before the word.
+SHORT_SPAN_MAX_CHARS = 6
+#: Lead kept ahead of the detected onset, so an unvoiced initial consonant
+#: (fricative / affricate / stop burst) that sits under the threshold survives.
+_LEADIN_KEEP_S = 0.10
+_LEADIN_FADE_S = 0.03
+#: Onset = first frame within this many dB of the loudest frame. Measured on
+#: the lead-in this removes: the breath sat 25-31 dB under the word's peak.
+_LEADIN_ONSET_DB = -20.0
+
+
+def is_speakable(text: str) -> bool:
+    """False for a span with nothing to say — brackets, quotes, dashes only.
+
+    A voice switch inside quotes leaves the quote marks as spans of their own;
+    synthesizing one costs a full engine call and yields a stray noise.
+    """
+    return any(ch.isalnum() for ch in (text or ""))
+
+
+def is_short_span(text: str) -> bool:
+    """True for a span short enough to pick up the boosted-length lead-in."""
+    n = sum(1 for ch in (text or "") if ch.isalnum())
+    return 0 < n <= SHORT_SPAN_MAX_CHARS
+
+
+def trim_short_span_leadin(audio_tensor: torch.Tensor, sample_rate: int) -> torch.Tensor:
+    """Drop the breathy lead-in ahead of a very short span's first loud frame.
+
+    Level-based only. Keeps ``_LEADIN_KEEP_S`` before the onset and fades it
+    in, so nothing starts on a click. No-op (same object back) when the onset
+    is already within the kept lead, or the clip is empty / has no loud frame.
+    ponytail: a fixed -20 dB onset; a word that opens with a long quiet
+    fricative loses what lies beyond the 100 ms lead — raise _LEADIN_KEEP_S if
+    that is ever heard.
+    """
+    n = audio_tensor.shape[-1] if audio_tensor.numel() else 0
+    frame = max(1, int(sample_rate * 0.02))
+    if n < frame * 4:
+        return audio_tensor
+    mono = audio_tensor.reshape(-1, n).abs().amax(dim=0) if audio_tensor.ndim > 1 else audio_tensor.abs()
+    rms = mono[: n - n % frame].reshape(-1, frame).pow(2).mean(dim=1).sqrt()
+    top = float(rms.max())
+    if top <= 0:
+        return audio_tensor
+    loud = torch.nonzero(rms > top * 10 ** (_LEADIN_ONSET_DB / 20.0))
+    start = int(loud[0].item()) * frame - int(_LEADIN_KEEP_S * sample_rate)
+    if start <= 0:
+        return audio_tensor
+    out = audio_tensor[..., start:].clone()
+    k = min(int(_LEADIN_FADE_S * sample_rate), out.shape[-1])
+    out[..., :k] *= torch.linspace(0.0, 1.0, k, dtype=out.dtype, device=out.device)
+    return out
+
+
 def apply_effects_chain(audio_tensor, sample_rate: int, chain: list[dict]) -> torch.Tensor:
     """Apply a chain of named effects to an audio tensor.
 
