@@ -56,6 +56,79 @@ _GEN_KW_ALLOWLIST = (
 
 _model = None
 
+# ── Encoded-reference cache ──────────────────────────────────────────────────
+# The in-process backend never re-encodes a reference clip it has already seen
+# (services.tts_backend._get_clone_prompt, an 8-entry LRU). This sidecar used
+# to hand ``ref_audio`` straight to ``model.generate`` on every request, so on
+# the hosts that run OmniVoice in a sidecar (Apple Silicon) every span paid the
+# reference encode again — and a script that alternates two voices paid it on
+# EVERY span, because the model's own single-slot memory only helps when the
+# same voice repeats. Measured on an M4: ~15 s per voice switch, which turned a
+# two-voice audiobook's 10 minutes of synthesis into 17.
+#
+# Kept local rather than importing the parent's cache: the sidecar is a
+# minimal process by design (crash isolation), and pulling in
+# services.tts_backend would drag the whole engine registry along with it.
+# Same key, same bound, same fallback as the parent, so behaviour matches
+# across hosts.
+from collections import OrderedDict
+
+_PROMPT_CACHE_MAX = 8
+_prompt_cache: "OrderedDict[tuple, object]" = OrderedDict()
+
+
+def _prompt_key(ref_audio: str, ref_text, preprocess_prompt: bool) -> tuple:
+    st = os.stat(ref_audio)
+    return (os.path.abspath(ref_audio), st.st_mtime_ns, st.st_size,
+            ref_text or "", bool(preprocess_prompt))
+
+
+def _clone_prompt(model, ref_audio: str, ref_text, preprocess_prompt: bool):
+    """The encoded reference for ``ref_audio``, encoded once per (clip, text).
+
+    Returns ``None`` when the model has no prompt API or the encode fails, so
+    the caller falls back to the inline path — never a hard error for a cache.
+    """
+    if not callable(getattr(model, "create_voice_clone_prompt", None)):
+        return None
+    try:
+        key = _prompt_key(ref_audio, ref_text, preprocess_prompt)
+    except OSError:
+        return None
+    hit = _prompt_cache.get(key)
+    if hit is not None:
+        _prompt_cache.move_to_end(key)
+        return hit
+    try:
+        prompt = model.create_voice_clone_prompt(
+            ref_audio, ref_text=ref_text, preprocess_prompt=preprocess_prompt
+        )
+    except Exception:  # noqa: BLE001 — a cache must not turn a working path into a failure
+        return None
+    _prompt_cache[key] = prompt
+    while len(_prompt_cache) > _PROMPT_CACHE_MAX:
+        _prompt_cache.popitem(last=False)
+    return prompt
+
+
+def _generate(model, *, text: str, ref_audio, ref_text, gen_kw: dict):
+    """``model.generate`` with the reference encoded once, not once per span.
+
+    ``voice_clone_prompt`` and ``ref_audio``/``ref_text`` are mutually
+    exclusive on the model, so a cached prompt goes in alone; anything else —
+    no reference, no prompt API, encode failure, a prompt the model rejects —
+    takes the exact inline call this sidecar always made.
+    """
+    if ref_audio:
+        prompt = _clone_prompt(model, ref_audio, ref_text,
+                               bool(gen_kw.get("preprocess_prompt", True)))
+        if prompt is not None:
+            try:
+                return model.generate(text=text, voice_clone_prompt=prompt, **gen_kw)
+            except Exception:  # noqa: BLE001 — same retry the parent does
+                pass
+    return model.generate(text=text, ref_audio=ref_audio, ref_text=ref_text, **gen_kw)
+
 
 # ── wire protocol ─────────────────────────────────────────────────────────
 
@@ -191,9 +264,8 @@ def _handle_synthesize(msg: dict, stdout) -> None:
 
         torch.manual_seed(int(seed))
 
-    audios = model.generate(
-        text=text, ref_audio=ref_audio, ref_text=ref_text, **gen_kw
-    )
+    audios = _generate(model, text=text, ref_audio=ref_audio, ref_text=ref_text,
+                       gen_kw=gen_kw)
     audio = audios[0] if isinstance(audios, (list, tuple)) else audios
     sample_rate = int(getattr(model, "sampling_rate", OMNIVOICE_SAMPLE_RATE))
 
